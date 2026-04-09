@@ -1,1 +1,1 @@
-# LAMMPS SDK 
+# LAMMPS runtime

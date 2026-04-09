@@ -1,0 +1,45 @@
+{
+  "name": "lammps-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript runtime SDK for building and running LAMMPS simulations in Docker.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "keywords": [
+    "lammps",
+    "docker",
+    "typescript",
+    "simulation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "dockerode": "^4.0.9",
+    "eventemitter3": "^5.0.1",
+    "pino": "^9.7.0"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.40",
+    "@types/node": "^22.15.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
