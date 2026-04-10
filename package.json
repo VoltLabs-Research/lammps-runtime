@@ -1,5 +1,5 @@
 {
-  "name": "lammps-runtime",
+  "name": "@voltstack/lammps-runtime",
   "version": "1.0.0",
   "author": {
     "email": "contact@voltcloud.dev",

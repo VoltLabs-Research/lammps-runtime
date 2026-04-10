@@ -1,6 +1,11 @@
 # lammps-runtime
 `lammps-runtime` provides a modular TypeScript API for building custom LAMMPS Docker images, executing simulations in containers, and exposing real-time runtime observability, thermodynamic output, dumps, and lifecycle events.
 
+## Installation
+```bash
+npm i @voltstack/lammps-runtime
+```
+
 ## Quick Start
 ```typescript
 import { LammpsRuntime } from '@voltstack/lammps-runtime';
