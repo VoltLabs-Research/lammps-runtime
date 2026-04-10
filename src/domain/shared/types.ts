@@ -8,8 +8,7 @@ export type RunState =
   | 'failed'
   | 'cancelled';
 
-export type ID = string;
-
-export const nowISO = () => {
-    return new Date().toISOString();
-};
+export type RunID = string;
+export type ImageTag = string;
+export type ISODateString = string;
+export type ScalarValue = string | number;

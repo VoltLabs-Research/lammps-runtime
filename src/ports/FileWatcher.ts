@@ -1,3 +1,17 @@
+export interface FileWatchHandlers{
+    onAdd(filePath: string): void | Promise<void>;
+    onChange(filePath: string): void | Promise<void>;
+    onError(error: Error): void | Promise<void>;
+};
+
+export interface FileWatchHandle{
+    close(): Promise<void>;
+};
+
 export interface FileWatcher{
-    watch(path: string, onChange: (file: string) => void): void;
+    watch(
+        rootPath: string, 
+        patterns: string[], 
+        handlers: FileWatchHandlers
+    ): Promise<FileWatchHandle>;
 };

@@ -1,14 +1,28 @@
 import EventEmitter from 'eventemitter3';
-import { EventPublisher } from '@/ports/EventPublisher';
+import { EventBusPort } from '@/ports/EventBusPort';
 
-export default class EventEmitterBus implements EventPublisher{
-    private emitter = new EventEmitter()
+export default class EventEmitterBus<Events extends object> implements EventBusPort<Events>{
+    private readonly emitter = new EventEmitter();
 
-    emit(event: string, payload: unknown){
+    emit<K extends keyof Events & string>(event: K, payload: Events[K]): void{
         this.emitter.emit(event, payload);
     }
 
-    on(event: string, handler: (payload: unknown) => void){
-        this.emitter.on(event, handler);
+    on<K extends keyof Events & string>(event: K, handler: (payload: Events[K]) => void): () => void{
+        this.emitter.on(event, handler as (payload: unknown) => void);
+        return () => this.off(event, handler);
+    }
+
+    once<K extends keyof Events & string>(event: K, handler: (payload: Events[K]) => void): () => void{
+        const unsubscribe = this.on(event, (payload) => {
+            unsubscribe();
+            handler(payload);
+        });
+
+        return unsubscribe;
+    }
+
+    off<K extends keyof Events & string>(event: K, handler: (payload: Events[K]) => void): void{
+        this.emitter.off(event, handler as (payload: unknown) => void);
     }
 };

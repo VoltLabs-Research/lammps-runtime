@@ -1,9 +1,17 @@
-import { ImageStore } from '@/ports/ImageStore';
+import { ImageRecord, ImageStore } from '@/ports/ImageStore';
 
 export default class InMemoryImageStore implements ImageStore{
-    private images = new Map<string, unknown>()
+    private readonly images = new Map<string, ImageRecord>();
 
-    async save(tag: string, spec: unknown){
-        this.images.set(tag, spec);
+    async save(record: ImageRecord): Promise<void>{
+        this.images.set(record.tag, record);
+    }
+
+    async get(tag: string): Promise<ImageRecord | null>{
+        return this.images.get(tag) ?? null;
+    }
+
+    async has(tag: string): Promise<boolean>{
+        return this.images.has(tag);
     }
 };

@@ -13,6 +13,10 @@ export default class InMemoryRunStore implements RunStore{
     }
 
     async get(id: string){
-        return this.runs.get(id) || null;
+        return this.runs.get(id) ?? null;
+    }
+
+    async list(): Promise<Run[]>{
+        return [...this.runs.values()];
     }
 };
