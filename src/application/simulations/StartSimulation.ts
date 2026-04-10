@@ -13,17 +13,23 @@ import { Logger } from '@/ports/Logger';
 import RunHandle from '@/domain/simulation/RunHandle';
 import LammpsOutputInterpreter from './LammpsOutputInterpreter';
 import DumpFrameTracker from './DumpFrameTracker';
+import LammpsCommandBuilder from './LammpsCommandBuilder';
+import SimulationEventPublisher from './SimulationEventPublisher';
+import SimulationLifecycleManager from './SimulationLifecycleManager';
 import StopSimulation from './StopSimulation';
 
 export default class StartSimulation{
     constructor(
         private readonly ensureImage: EnsureImage,
         private readonly workspacePreparer: WorkspacePreparerPort,
+        private readonly commandBuilder: LammpsCommandBuilder,
         private readonly containerManager: ContainerManagerPort,
         private readonly logStreamer: LogStreamerPort,
         private readonly fileWatcher: FileWatcher,
         private readonly runStore: RunStore,
         private readonly eventBus: EventBusPort<RuntimeEventMap>,
+        private readonly eventPublisher: SimulationEventPublisher,
+        private readonly lifecycleManager: SimulationLifecycleManager,
         private readonly stopSimulation: StopSimulation,
         private readonly logger: Logger
     ){}
@@ -32,22 +38,12 @@ export default class StartSimulation{
         const resolvedSpec = this.resolveSpec(spec);
         this.validateInputScript(resolvedSpec);
         
-        let imageTag = (typeof resolvedSpec.image === 'string')
+        const imageTag = (typeof resolvedSpec.image === 'string')
             ? resolvedSpec.image
-            : (await this.ensureImage.execute(resolvedSpec.image)).tag
+            : (await this.ensureImage.execute(resolvedSpec.image)).tag;
         
         const run = new Run(crypto.randomUUID(), imageTag, resolvedSpec.outputDir);
-        run.markPreparing();
-        await this.runStore.save(run);
-
-        this.eventBus.emit('simulation:created', {
-            runId: run.id,
-            imageTag,
-            outputDir: resolvedSpec.outputDir,
-            snapshot: run.snapshot()
-        });
-
-        this.emitState(run);
+        await this.lifecycleManager.prepare(run);
 
         let workspace: PreparedWorkspace | null = null;
         let container: ContainerHandle | null = null;
@@ -56,7 +52,7 @@ export default class StartSimulation{
 
         try{
             workspace = await this.workspacePreparer.prepare(run.id, resolvedSpec);
-            const command = this.buildCommand(resolvedSpec, workspace.mainInputContainerPath);
+            const command = this.commandBuilder.build(resolvedSpec, workspace.mainInputContainerPath);
 
             container = await this.containerManager.create({
                 imageTag,
@@ -75,10 +71,7 @@ export default class StartSimulation{
                 gpus: resolvedSpec.resources.gpus
             });
 
-            run.attachContainer(container.id);
-            run.markStarting();
-            await this.runStore.update(run);
-            this.emitState(run);
+            await this.lifecycleManager.markStarting(run, container.id);
 
             const outputInterpreter = new LammpsOutputInterpreter();
             const dumpTracker = new DumpFrameTracker();
@@ -88,11 +81,7 @@ export default class StartSimulation{
                     await this.handleStdout(run, line, outputInterpreter);
                 },
                 onStderr: async (line) => {
-                    this.eventBus.emit('simulation:stderr', {
-                        runId: run.id,
-                        line,
-                        snapshot: run.snapshot()
-                    });
+                    this.eventPublisher.stderr(run, line);
                 },
                 onError: async (error) => {
                     await this.handleError(run, error);
@@ -116,19 +105,7 @@ export default class StartSimulation{
             }
 
             await this.containerManager.start(container);
-            
-            run.markRunning();
-            await this.runStore.update(run);
-
-            this.eventBus.emit('simulation:start', {
-                runId: run.id,
-                imageTag,
-                containerId: container.id,
-                outputDir: workspace.outputDir,
-                snapshot: run.snapshot()
-            });
-
-            this.emitState(run);
+            await this.lifecycleManager.markRunning(run);
 
             const handle = new RunHandle(
                 run.id,
@@ -150,37 +127,8 @@ export default class StartSimulation{
             return handle;
         }catch(error){
             const message = error instanceof Error ? error.message : String(error);
-            run.markFailed(message);
-            await this.runStore.update(run);
-            this.emitState(run);
-
-            this.eventBus.emit('simulation:error', {
-                runId: run.id,
-                error: message,
-                snapshot: run.snapshot()
-            });
-
-            this.eventBus.emit('simulation:end', {
-                runId: run.id,
-                exitCode: null,
-                snapshot: run.snapshot()
-            });
-
-            if(logStream){
-                await logStream.close();
-            }
-
-            if(watchHandle){
-                await watchHandle.close();
-            }
-
-            if(container && resolvedSpec.cleanup.removeContainer){
-                await this.containerManager.remove(container, true);
-            }
-
-            if(workspace && resolvedSpec.cleanup.removeWorkspace){
-                await this.workspacePreparer.cleanup(workspace);
-            }
+            await this.lifecycleManager.fail(run, message);
+            await this.cleanupResources(resolvedSpec, workspace, container, logStream, watchHandle);
 
             throw error;
         }
@@ -225,66 +173,22 @@ export default class StartSimulation{
         }
     }
 
-    private buildCommand(spec: ResolvedSimulationSpec, mainInputContainerPath: string): string{
-        const command: string[] = [];
-        
-        if(spec.execution.mpiRanks > 1){
-            command.push('mpirun', '--allow-run-as-root', '-np', String(spec.execution.mpiRanks));
-        }
-
-        command.push(spec.execution.binary, '-in', mainInputContainerPath);
-
-        for(const [key, value] of Object.entries(spec.variables)){
-            command.push('-var', key, String(value));
-        }
-        
-        command.push(...spec.execution.extraArgs);
-
-        return command.map((entry) => this.shellEscape(entry)).join(' ');
-    }
-    
-    private shellEscape(value: string): string{
-        if(value.length === 0){
-            return "''";
-        }
-
-        return `'${value.replace(/'/g, `'\\''`)}'`;
-    }
-
     private async handleStdout(run: Run, line: string, interpreter: LammpsOutputInterpreter): Promise<void>{
-        this.eventBus.emit('simulation:stdout', {
-            runId: run.id,
-            line,
-            snapshot: run.snapshot()
-        });
+        this.eventPublisher.stdout(run, line);
 
         for(const event of interpreter.consume(line)){
             if(event.type === 'thermo'){
                 if(typeof event.step === 'number'){
-                    run.recordStep(event.step);
-                    await this.runStore.update(run);
+                    await this.recordStep(run, event.step);
                 }
                 
-                this.eventBus.emit('thermo', {
-                    runId: run.id,
-                    step: event.step,
-                    values: event.values,
-                    raw: event.raw,
-                    snapshot: run.snapshot()
-                });
+                this.eventPublisher.thermo(run, event.step, event.values, event.raw);
                 
                 continue;
             }
 
-            run.recordStep(event.step);
-            await this.runStore.update(run);
-
-            this.eventBus.emit('timestep', {
-                runId: run.id,
-                step: event.step,
-                source: event.source,
-                snapshot: run.snapshot()
-            });
+            await this.recordStep(run, event.step);
+            this.eventPublisher.timestep(run, event.step, event.source);
         }
     }
 
@@ -294,11 +198,7 @@ export default class StartSimulation{
         tracker: DumpFrameTracker,
         parseTimesteps: boolean
     ): Promise<void>{
-        this.eventBus.emit('dump:detected', {
-            runId: run.id,
-            path: filePath,
-            snapshot: run.snapshot()
-        });
+        this.eventPublisher.dumpDetected(run, filePath);
 
         if(!parseTimesteps){
             return;
@@ -307,32 +207,15 @@ export default class StartSimulation{
         const steps = await tracker.readNewSteps(filePath);
 
         for(const step of steps){
-            run.recordStep(step);
-            await this.runStore.update(run);
-
-            this.eventBus.emit('dump:frame', {
-                runId: run.id,
-                path: filePath,
-                step,
-                snapshot: run.snapshot()
-            });
-
-            this.eventBus.emit('timestep', {
-                runId: run.id,
-                step,
-                source: 'dump',
-                snapshot: run.snapshot()
-            });
+            await this.recordStep(run, step);
+            this.eventPublisher.dumpFrame(run, filePath, step);
+            this.eventPublisher.timestep(run, step, 'dump');
         }
     }
 
     private async handleError(run: Run, error: Error): Promise<void>{
         this.logger.error(`Run ${run.id} error ${error.message}`);
-        this.eventBus.emit('simulation:error', {
-            runId: run.id,
-            error: error.message,
-            snapshot: run.snapshot()
-        });
+        this.eventPublisher.error(run, error.message);
     }
 
     private async monitorCompletion(
@@ -345,63 +228,41 @@ export default class StartSimulation{
     ): Promise<void>{
         try{
             const result = await this.containerManager.wait(container);
-
-            if(run.isStopping()){
-                run.markCancelled();
-            }else if(result.exitCode === 0){
-                run.markCompleted(result.exitCode);
-            }else{
-                run.markFailed(`Container exited with code ${result.exitCode}.`, result.exitCode);
-            }
-
-            await this.runStore.update(run);
-            this.emitState(run);
-
-            this.eventBus.emit('simulation:end', {
-                runId: run.id,
-                exitCode: result.exitCode,
-                snapshot: run.snapshot()
-            });
-
+            await this.lifecycleManager.settle(run, result.exitCode);
         }catch(error){
             const message = error instanceof Error ? error.message : String(error);
-            run.markFailed(message, null);
-            await this.runStore.update(run);
-            this.emitState(run);
-
-            this.eventBus.emit('simulation:error', {
-                runId: run.id,
-                error: message,
-                snapshot: run.snapshot()
-            });
-
-            this.eventBus.emit('simulation:end', {
-                runId: run.id,
-                exitCode: null,
-                snapshot: run.snapshot()
-            });
+            await this.lifecycleManager.fail(run, message, null);
         }finally{
-            await logStream.close();
-
-            if(watchHandle){
-                await watchHandle.close();
-            }
-
-            if(spec.cleanup.removeContainer && run.containerId){
-                await this.containerManager.remove(this.containerManager.get(run.containerId), true);
-            }
-
-            if(spec.cleanup.removeWorkspace){
-                await this.workspacePreparer.cleanup(workspace);
-            }
+            await this.cleanupResources(spec, workspace, container, logStream, watchHandle);
         }
     }
 
-    private emitState(run: Run): void{
-        this.eventBus.emit('simulation:state', {
-            runId: run.id,
-            state: run.state,
-            snapshot: run.snapshot()
-        });
+    private async recordStep(run: Run, step: number): Promise<void>{
+        run.recordStep(step);
+        await this.runStore.update(run);
+    }
+
+    private async cleanupResources(
+        spec: ResolvedSimulationSpec,
+        workspace: PreparedWorkspace | null,
+        container: ContainerHandle | null,
+        logStream: LogStreamHandle | null,
+        watchHandle: FileWatchHandle | null
+    ): Promise<void>{
+        if(logStream){
+            await logStream.close();
+        }
+
+        if(watchHandle){
+            await watchHandle.close();
+        }
+
+        if(container && spec.cleanup.removeContainer){
+            await this.containerManager.remove(container, true);
+        }
+
+        if(workspace && spec.cleanup.removeWorkspace){
+            await this.workspacePreparer.cleanup(workspace);
+        }
     }
 };

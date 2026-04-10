@@ -3,15 +3,17 @@ import Docker from 'dockerode';
 import { ContainerHandle } from '@/ports/ContainerManagerPort';
 import type { Logger } from '@/ports/Logger';
 import { LogStreamHandle, LogStreamHandlers, LogStreamerPort } from '@/ports/LogStreamerPort';
+import DockerContainerResolver from './DockerContainerResolver';
 
 export default class DockerLogStreamer implements LogStreamerPort{
     constructor(
         private readonly docker: Docker,
+        private readonly containerResolver: DockerContainerResolver,
         private readonly logger: Logger
     ){}
 
     async stream(container: ContainerHandle, handlers: LogStreamHandlers): Promise<LogStreamHandle>{
-        const attached = await this.resolveContainer(container).attach({
+        const attached = await this.containerResolver.resolve(container).attach({
             stream: true,
             stdout: true,
             stderr: true,
@@ -38,14 +40,6 @@ export default class DockerLogStreamer implements LogStreamerPort{
                 stderr.destroy();
             }
         };
-    }
-
-    private resolveContainer(container: ContainerHandle): Docker.Container{
-        if(container.raw){
-            return container.raw as Docker.Container;
-        }
-
-        return this.docker.getContainer(container.id);
     }
 
     private pipe(

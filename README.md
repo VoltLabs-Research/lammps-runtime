@@ -1,1 +1,1 @@
-# LAMMPS runtime
+# LAMMPS Runtime

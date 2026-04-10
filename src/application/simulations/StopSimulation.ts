@@ -1,15 +1,14 @@
-import { RuntimeEventMap } from '@/domain/observability/EventMap';
 import { RunSnapshot } from '@/domain/simulation/RunSnapshopt';
 import { ContainerManagerPort } from '@/ports/ContainerManagerPort';
-import { EventBusPort } from '@/ports/EventBusPort';
 import { Logger } from '@/ports/Logger';
 import { RunStore } from '@/ports/RunStore';
+import SimulationLifecycleManager from './SimulationLifecycleManager';
 
 export default class StopSimulation{
     constructor(
         private readonly runStore: RunStore,
         private readonly containerManager: ContainerManagerPort,
-        private readonly eventBus: EventBusPort<RuntimeEventMap>,
+        private readonly lifecycleManager: SimulationLifecycleManager,
         private readonly logger: Logger
     ){}
 
@@ -24,14 +23,7 @@ export default class StopSimulation{
             throw new Error(`Run "${runId}" has no container attached.`);
         }
 
-        run.requestStop();
-        await this.runStore.update(run);
-
-        this.eventBus.emit('simulation:state', {
-            runId: run.id,
-            state: run.state,
-            snapshot: run.snapshot()
-        });
+        await this.lifecycleManager.requestStop(run);
 
         const container = this.containerManager.get(run.containerId);
 

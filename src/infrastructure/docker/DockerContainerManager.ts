@@ -6,10 +6,12 @@ import {
     ContainerWaitResult
 } from '@/ports/ContainerManagerPort';
 import type { Logger } from '@/ports/Logger';
+import DockerContainerResolver from './DockerContainerResolver';
 
 export default class DockerContainerManager implements ContainerManagerPort{
     constructor(
         private readonly docker: Docker,
+        private readonly containerResolver: DockerContainerResolver,
         private readonly logger: Logger
     ){}
 
@@ -58,38 +60,30 @@ export default class DockerContainerManager implements ContainerManagerPort{
     }
 
     async start(container: ContainerHandle): Promise<void>{
-        await this.resolveContainer(container).start();
+        await this.containerResolver.resolve(container).start();
     }
 
     async wait(container: ContainerHandle): Promise<ContainerWaitResult>{
-        const result = await this.resolveContainer(container).wait();
+        const result = await this.containerResolver.resolve(container).wait();
         return {
             exitCode: typeof result?.StatusCode === 'number' ? result.StatusCode : null
         };
     }
 
     async stop(container: ContainerHandle, timeoutSeconds = 10): Promise<void>{
-        await this.resolveContainer(container).stop({ t: timeoutSeconds });
+        await this.containerResolver.resolve(container).stop({ t: timeoutSeconds });
     }
 
     async kill(container: ContainerHandle): Promise<void>{
-        await this.resolveContainer(container).kill();
+        await this.containerResolver.resolve(container).kill();
     }
 
     async remove(container: ContainerHandle, force = true): Promise<void>{
         try{
-            await this.resolveContainer(container).remove({ force });
+            await this.containerResolver.resolve(container).remove({ force });
         }catch{
             this.logger.warn(`Container removal skipped: ${container.id}`);
         }
-    }
-
-    private resolveContainer(container: ContainerHandle): Docker.Container{
-        if(container.raw){
-            return container.raw as Docker.Container;
-        }
-
-        return this.docker.getContainer(container.id);
     }
 
     private parseMemory(value: string): number{

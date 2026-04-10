@@ -6,6 +6,9 @@ import RunHandle from '@/domain/simulation/RunHandle';
 import { RunSnapshot } from '@/domain/simulation/RunSnapshopt';
 import { SimulationSpec } from '@/domain/simulation/SimulationSpec';
 import EnsureImage from '@/application/images/EnsureImage';
+import LammpsCommandBuilder from '@/application/simulations/LammpsCommandBuilder';
+import SimulationEventPublisher from '@/application/simulations/SimulationEventPublisher';
+import SimulationLifecycleManager from '@/application/simulations/SimulationLifecycleManager';
 import StartSimulation from '@/application/simulations/StartSimulation';
 import StopSimulation from '@/application/simulations/StopSimulation';
 import type { Logger as PinoBaseLogger } from 'pino';
@@ -17,6 +20,7 @@ import PinoLogger from '@/infrastructure/logging/PinoLogger';
 import EventEmitterBus from '@/infrastructure/events/EventEmitterBus';
 import DockerImageBuilder from '@/infrastructure/docker/DockerImageBuilder';
 import DockerContainerManager from '@/infrastructure/docker/DockerContainerManager';
+import DockerContainerResolver from '@/infrastructure/docker/DockerContainerResolver';
 import DockerLogStreamer from '@/infrastructure/docker/DockerLogStreamer';
 import ChokidarFileWatcher from '@/infrastructure/fs/ChokidarFileWatcher';
 import NodeWorkspacePreparer from '@/infrastructure/fs/NodeWorkspacePreparer';
@@ -42,11 +46,15 @@ export default class LammpsRuntime{
         this.logger = new PinoLogger(options.logger);
         this.eventBus = new EventEmitterBus<RuntimeEventMap>();
 
+        const commandBuilder = new LammpsCommandBuilder();
+        const containerResolver = new DockerContainerResolver(docker);
         const imageBuilder = new DockerImageBuilder(docker, this.logger.child({ scope: 'image-builder' }));
-        const containerManager = new DockerContainerManager(docker, this.logger.child({ scope: 'container-manager' }));
-        const logStreamer = new DockerLogStreamer(docker, this.logger.child({ scope: 'log-streamer' }));
+        const containerManager = new DockerContainerManager(docker, containerResolver, this.logger.child({ scope: 'container-manager' }));
+        const logStreamer = new DockerLogStreamer(docker, containerResolver, this.logger.child({ scope: 'log-streamer' }));
         const fileWatcher = new ChokidarFileWatcher(this.logger.child({ scope: 'file-watcher' }));
         const workspacePreparer = new NodeWorkspacePreparer(this.logger.child({ scope: 'workspace-preparer' }));
+        const eventPublisher = new SimulationEventPublisher(this.eventBus);
+        const lifecycleManager = new SimulationLifecycleManager(this.runStore, eventPublisher);
 
         this.ensureImage = new EnsureImage(
             imageBuilder,
@@ -58,18 +66,21 @@ export default class LammpsRuntime{
         this.stopSimulation = new StopSimulation(
             this.runStore,
             containerManager,
-            this.eventBus,
+            lifecycleManager,
             this.logger.child({ scope: 'stop-simulation' })
         );
 
         this.startSimulation = new StartSimulation(
             this.ensureImage,
             workspacePreparer,
+            commandBuilder,
             containerManager,
             logStreamer,
             fileWatcher,
             this.runStore,
             this.eventBus,
+            eventPublisher,
+            lifecycleManager,
             this.stopSimulation,
             this.logger.child({ scope: 'start-simulation' })
         );
